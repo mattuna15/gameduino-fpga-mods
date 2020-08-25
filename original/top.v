@@ -692,95 +692,6 @@ module ram400x7s(
   endgenerate
 endmodule
 
-// SPI can be many things, so to be clear, this implementation:
-//   MSB first
-//   CPOL 0, leading edge when SCK rises
-//   CPHA 0, sample on leading, setup on trailing
-
-module SPI_memory(
-  input clk,
-  input SCK, input MOSI, output MISO, input SSEL,
-  output wire [15:0] raddr,   // read address
-  output reg [15:0] waddr,    // write address
-  output reg [7:0] data_w,
-  input [7:0] data_r,
-  output reg we,
-  output reg re,
-  output mem_clk
-);
-  reg [15:0] paddr;
-  reg [4:0] count;
-  wire [4:0] _count = (count == 23) ? 16 : (count + 1);
-
-  assign mem_clk = clk;
-
-  // sync SCK to the FPGA clock using a 3-bits shift register
-  reg [2:0] SCKr;  always @(posedge clk) SCKr <= {SCKr[1:0], SCK};
-  wire SCK_risingedge = (SCKr[2:1]==2'b01);  // now we can detect SCK rising edges
-  wire SCK_fallingedge = (SCKr[2:1]==2'b10);  // and falling edges
-
-  // same thing for SSEL
-  reg [2:0] SSELr;  always @(posedge clk) SSELr <= {SSELr[1:0], SSEL};
-  wire SSEL_active = ~SSELr[1];  // SSEL is active low
-  wire SSEL_startmessage = (SSELr[2:1]==2'b10);  // message starts at falling edge
-  wire SSEL_endmessage = (SSELr[2:1]==2'b01);  // message stops at rising edge
-
-// and for MOSI
-  reg [1:0] MOSIr;  always @(posedge clk) MOSIr <= {MOSIr[0], MOSI};
-  wire MOSI_data = MOSIr[1];
-
-  assign raddr = (count[4] == 0) ? {paddr[14:0], MOSI} : paddr;
-
-  always @(posedge clk)
-  begin
-    if (~SSEL_active) begin
-      count <= 0;
-      re <= 0;
-      we <= 0;
-    end else
-      if (SCK_risingedge) begin
-        if (count[4] == 0) begin
-          we <= 0;
-          paddr <= raddr;
-          re <= (count == 15);
-        end else begin
-          data_w <= {data_w[6:0], MOSI_data};
-          if (count == 23) begin
-            we <= paddr[15];
-            re <= !paddr[15];
-            waddr <= paddr;
-            paddr <= paddr + 1;
-          end else begin
-            we <= 0;
-            re <= 0;
-          end
-        end
-        count <= _count;
-      end
-      if (SCK_fallingedge) begin
-        re <= 0;
-        we <= 0;
-      end
-  end
-
-  reg readbit;
-  always @*
-  begin
-    case (count[2:0])
-    3'd0: readbit <= data_r[7];
-    3'd1: readbit <= data_r[6];
-    3'd2: readbit <= data_r[5];
-    3'd3: readbit <= data_r[4];
-    3'd4: readbit <= data_r[3];
-    3'd5: readbit <= data_r[2];
-    3'd6: readbit <= data_r[1];
-    3'd7: readbit <= data_r[0];
-    endcase
-  end
-  assign MISO = readbit;
-
-endmodule
-
 // This is a Delta-Sigma Digital to Analog Converter
 `define MSBI 12 // Most significant Bit of DAC input, 12 means 13-bit
 
@@ -810,43 +721,46 @@ begin
 end
 endmodule
 
-module top(
-  input clka,
+module gameduino_main(
+  input vga_clk, // Twice the frequency of the original clka board clock
   output [2:0] vga_red,
   output [2:0] vga_green,
   output [2:0] vga_blue,
-  output vga_hsync_n,
-  output vga_vsync_n,
+  output vga_hsync,
+  output vga_vsync,
+  output reg vga_active,
+  
+  input mem_clk, // Should probably be same as vga_clk
+  input host_mem_wr,             // set to zero if not used
+  input [14:0] host_mem_w_addr,  // set to zero if not used
+  input [7:0] host_mem_data_wr,  // set to zero if not used
+  input host_mem_rd,             // set to zero if not used
+  input [14:0] host_mem_r_addr,  // set to zero if not used
+  output [7:0] host_mem_data_rd,
 
-  input SCK,  // arduino 13
-  input MOSI, // arduino 11
-  inout MISO, // arduino 12
-  input SSEL, // arduino 9
-  inout AUX,  // arduino 2
+  input AUX_in, // set to zero if not used
+  output AUX_out,
+  output AUX_tristate,
+
   output AUDIOL,
   output AUDIOR,
 
-  output flashMOSI,
-  input  flashMISO,
-  output flashSCK,
-  output flashSSEL
+  output pin2f,
+  output pin2j,
+  output reg j1_flashMOSI,
+  output reg j1_flashSCK,
+  output reg j1_flashSSEL,
+  input flashMISO  // set to zero if not used
 
   );
+  wire AUX;
 
 
-  wire mem_clk;
-  wire [7:0] host_mem_data_wr;
   reg [7:0] mem_data_rd;
-  reg [7:0] latched_mem_data_rd;
+  assign host_mem_data_rd = mem_data_rd;
+
   wire [14:0] mem_w_addr;   // Combined write address
   wire [14:0] mem_r_addr;   // Combined read address
-  wire [14:0] host_mem_w_addr;
-  wire [14:0] host_mem_r_addr;
-  wire host_mem_wr;
-  wire mem_rd;
-
-  wire vga_clk;
-  ck_div #(.DIV_BY(2), .MULT_BY(4)) vga_ck_gen(.ck_in(clka), .ck_out(vga_clk));
 
   wire [15:0] j1_insn;
   wire [12:0] j1_insn_addr;
@@ -863,23 +777,7 @@ module top(
   wire [7:0] mem_data_rd4;
   wire [7:0] mem_data_rd5;
 
-  wire gdMISO;
-
-  always @(posedge vga_clk)
-  if (mem_rd)
-    latched_mem_data_rd <= mem_data_rd;
-
-  SPI_memory spi1(
-    .clk(vga_clk),
-    .SCK(SCK), .MOSI(MOSI), .MISO(gdMISO), .SSEL(SSEL),
-    .raddr(host_mem_r_addr),
-    .waddr(host_mem_w_addr),
-    .data_w(host_mem_data_wr),
-    .data_r(latched_mem_data_rd),
-    .we(host_mem_wr),
-    .re(mem_rd),
-    .mem_clk(mem_clk));
-  wire host_busy = host_mem_wr | mem_rd;
+  wire host_busy = host_mem_wr | host_mem_rd;
   wire mem_wr =            host_busy ? host_mem_wr : j1_mem_wr;
   wire [7:0] mem_data_wr = host_busy ? host_mem_data_wr : j1_mem_dout;
   wire [14:0] mem_addr =   host_busy ? (host_mem_wr ? host_mem_w_addr : host_mem_r_addr) : j1_mem_addr;
@@ -891,12 +789,9 @@ module top(
   reg [6:0] modvoice = 64;
   reg [14:0] bg_color;
   reg [7:0] pin2mode = 0;
-  wire pin2f = (pin2mode == 8'h46);
-  wire pin2j = (pin2mode == 8'h4A);
+  assign pin2f = (pin2mode == 8'h46);
+  assign pin2j = (pin2mode == 8'h4A);
 
-  wire flashsel = (AUX == 0) & pin2f;
-
-  assign MISO = SSEL ? (flashsel ? flashMISO : 1'bz) : gdMISO;
   // assign MISO = SSEL ? (1'bz ) : gdMISO;
   // PULLUP MISO_pullup(.O(MISO));
   // IOBUF MISO_iobuf(
@@ -1008,7 +903,7 @@ module top(
 // `define HSTART (53 + 120 + 61)
 `define HSTART 0
 
-  reg vga_HS, vga_VS, vga_active;
+  reg vga_HS, vga_VS;
   always @(posedge vga_clk)
   begin
     vga_HS <= ((800 + 61) <= CounterX) & (CounterX < (800 + 61 + 120));
@@ -1087,6 +982,8 @@ module top(
   wire [14:0] char_final = char_matte[15] ? bg_color : char_matte[14:0];
 
   reg [7:0] mem_data_rd_reg;
+  
+  reg vga_irq = 0;
 
   // Collision detection RAM is readable during vblank
   // writes coll_d to coll_w_addr during render
@@ -1123,6 +1020,12 @@ module top(
 
   always @(posedge vga_clk)
   begin
+  
+    if (CounterY >= 600)
+        vga_irq <= 1;
+    else 
+        vga_irq <= 0;
+  
     if (screenshot_reset)
       screenshot_done <= 0;
     else if (CounterXmaxed & screenshot_primed & !screenshot_done & (public_yy == screenshot_yy)) begin
@@ -1136,7 +1039,7 @@ module top(
     11'h000: mem_data_rd_reg <= 8'h6d;  // Gameduino ident
     11'h001: mem_data_rd_reg <= `REVISION;
     11'h002: mem_data_rd_reg <= frames;
-    11'h003: mem_data_rd_reg <= coll_rd;  // called VBLANK, but really "is coll readable?"
+    11'h003: mem_data_rd_reg <= vga_irq;   //coll_rd;  // called VBLANK, but really "is coll readable?"
     11'h004: mem_data_rd_reg <= scrollx[7:0];
     11'h005: mem_data_rd_reg <= scrollx[8];
     11'h006: mem_data_rd_reg <= scrolly[7:0];
@@ -1567,8 +1470,8 @@ module top(
   assign vga_red =    vga_active ? f_r : 0;
   assign vga_green =  vga_active ? f_g : 0;
   assign vga_blue =   vga_active ? f_b : 0;
-  assign vga_hsync_n = ~vga_HS;
-  assign vga_vsync_n = ~vga_VS;
+  assign vga_hsync = vga_HS;
+  assign vga_vsync = vga_VS;
 
   /*
   An 18-bit counter, multiplied by the frequency gives a single bit
@@ -1795,9 +1698,6 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
   end
 
   wire [0:7] j1_mem_dout_be = j1_mem_dout;
-  reg j1_flashMOSI;
-  reg j1_flashSCK;
-  reg j1_flashSSEL;
 
   always @(posedge vga_clk)
   begin
@@ -1845,10 +1745,8 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
     .ad(mem_data_wr),
     .ao(j1insnh_read));
 
-  assign flashMOSI = pin2j ? j1_flashMOSI : MOSI;
-  assign flashSCK = pin2j ? j1_flashSCK : SCK;
-  assign flashSSEL = pin2f ? AUX : (pin2j ? j1_flashSSEL : 1);
-
-  assign AUX = (pin2j & (j1_p2_dir == 0)) ? j1_p2_o : 1'bz;
+  assign AUX_tristate = (pin2j & (j1_p2_dir == 0)) ? 0 : 1;
+  assign AUX_out = j1_p2_o;
+  assign AUX = AUX_tristate ? AUX_in : AUX_out;
 
 endmodule // top
