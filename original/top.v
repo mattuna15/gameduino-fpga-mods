@@ -721,6 +721,44 @@ begin
 end
 endmodule
 
+module pwm_generator #(parameter BITS = 16, SAMPLE_PERIOD_BITS = 10, WIDTH_BITS = 8) (
+        input clk,
+
+        input signed [BITS-1:0] sample_in_l, sample_in_r,
+
+        output ready,
+        output pwm_l, pwm_r
+    );
+    localparam DITHER_BITS = BITS - WIDTH_BITS;
+
+    reg [BITS-1:0] counter = 0;
+    reg signed [BITS-1:0] sample_l = 0, sample_r = 0;
+
+    wire [BITS-1:0] counter_plus_one = counter + 1;
+    assign ready = counter_plus_one[SAMPLE_PERIOD_BITS] != counter[SAMPLE_PERIOD_BITS];
+    always @(posedge clk) begin
+        if (ready) begin
+            sample_l <= sample_in_l;
+            sample_r <= sample_in_r;
+        end
+
+        counter <= counter_plus_one;
+    end
+
+    wire signed [BITS-1:0] threshold;
+    assign threshold[DITHER_BITS +: WIDTH_BITS] = counter[0 +: WIDTH_BITS];
+    generate
+        genvar k;
+        for (k = 0; k < DITHER_BITS; k = k + 1) begin : bit_reverse
+            assign threshold[k] = counter[BITS-1 - k];
+        end
+    endgenerate
+
+    assign pwm_l = sample_l > threshold; 
+    assign pwm_r = sample_r > threshold; 
+endmodule
+
+
 module gameduino_main(
   input vga_clk, // Twice the frequency of the original clka board clock
   output [2:0] vga_red,
@@ -744,6 +782,10 @@ module gameduino_main(
 
   output AUDIOL,
   output AUDIOR,
+  output audio_trigger,
+
+//    output  [15:0] audio_l,
+//    output  [15:0] audio_r,
 
   output pin2f,
   output pin2j,
@@ -1610,18 +1652,28 @@ ROM64X1 #(.INIT(64'b000000000001111111111111111111111111111111111111111111000000
 //                       soundcounter[15]
 //                       };
 
-`ifdef NELLY
-  wire lau_out = lvalue >= dither;
-  wire rau_out = rvalue >= dither;
+//`ifdef NELLY
+//  wire lau_out = lvalue >= dither;
+//  wire rau_out = rvalue >= dither;
 
-  assign AUDIOL = lau_out;
-  assign AUDIOR = rau_out;
-`else
-  wire [12:0] ulvalue = lvalue ^ 4096;
-  wire [12:0] urvalue = rvalue ^ 4096;
-  dac ldac(AUDIOL, ulvalue, vga_clk, 0);
-  dac rdac(AUDIOR, urvalue, vga_clk, 0);
-`endif
+//  assign AUDIOL = lau_out;
+//  assign AUDIOR = rau_out;
+//`else
+//  wire [12:0] ulvalue = lvalue ^ 4096;
+//  wire [12:0] urvalue = rvalue ^ 4096;
+//  dac ldac(AUDIOL, ulvalue, vga_clk, 0);
+//  dac rdac(AUDIOR, urvalue, vga_clk, 0);
+//`endif
+
+  wire fms_trigger;
+  assign audio_trigger = fms_trigger;
+  
+  pwm_generator dac(
+    .clk(vga_clk),
+    .sample_in_l(lvalue), .sample_in_r(rvalue),
+    .ready(fms_trigger),
+    .pwm_l(AUDIOL), .pwm_r(AUDIOR)
+  );
 
   reg [2:0] busyhh;
   always @(posedge vga_clk) busyhh = { busyhh[1:0], host_busy };
