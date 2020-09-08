@@ -3,6 +3,46 @@ Modified Gameduino.
 Removed SPI, added PWM DAC. Now suitable for use in Retro computing projects such as Merlin, Multicomp etc.
 Modified version in "originals" folder
 
+The module can now be called directly as a memory mapped peripheral rather than using spi:
+E.g.
+<code>
+      
+    
+      vga: entity work.gameduino_main
+    	port map (
+      vga_clk => clk50, -- Twice the frequency of the original clka board clock
+      vga_red => VGA_R(3 downto 1),
+      vga_green => VGA_G(3 downto 1),
+      vga_blue => VGA_B(3 downto 1),
+      vga_hsync => hSync,
+      vga_vsync => vSync,
+      vga_active => open,
+      coll_rd => vga_irq,
+      mem_clk => sys_clock100, 
+      host_mem_wr => vga_wr_en,             -- set to zero if not used
+      host_mem_w_addr => vga_addr(14 downto 0),  -- set to zero if not used
+      host_mem_data_wr => vga_wr_data,  -- set to zero if not used
+      host_mem_rd => vga_rd_en,            -- set to zero if not used
+      host_mem_r_addr => vga_addr(14 downto 0),  -- set to zero if not used
+      host_mem_data_rd => vga_rd_data,
+      AUX_in => std_logic_vector(to_unsigned(0, 1)), -- set to zero if not used
+      AUX_out => open,
+      AUX_tristate => open,
+    
+      AUDIOL => pwm_audio_o,
+      AUDIOR => open,
+      audio_trigger => audio_playing,
+    
+      pin2f => open,
+      pin2j => open,
+      j1_flashMOSI  => open,
+      j1_flashSCK  => open,
+      j1_flashSSEL  => open,
+      flashMISO => std_logic_vector(to_unsigned(0, 1)));
+</code>
+
+<br>
+
 gameduino-fpga-mods
 ===================
 Investigations and modifications of the FPGA code from @jamesbowman's Gameduino file repository
