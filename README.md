@@ -1,3 +1,8 @@
+Modified Gameduino.
+
+Removed SPI, added PWM DAC. Now suitable for use in Retro computing projects such as Merlin, Multicomp etc.
+Modified version in "originals" folder
+
 gameduino-fpga-mods
 ===================
 Investigations and modifications of the FPGA code from @jamesbowman's Gameduino file repository
